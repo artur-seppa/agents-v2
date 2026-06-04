@@ -9,6 +9,58 @@ import type {
   MultiTurnResult,
 } from "./types.ts";
 
+/*
+  Obtemos o score de 1-10 (o LLM não trabalha bem com ponto flutuante) e temos o reason
+  para justificativa do score e isso faz o LLM pensar melhor na resposta
+*/
+const judgeSchema = z.object({
+  score: z.number().min(1).max(10).describe('Score from 1-10 where 10 is perfect'),
+  reason: z.string().describe('Brief explanation for the score')
+})
+
+export const llmJudge = async(output: MultiTurnResult, target: MultiTurnTarget) => {
+  /* generateObject faz com que o LLM retorna um object json com o schema que voce deseja, 
+    entao usamos o judgeSchema pro retorno.
+    schemaDescription: descreve o que o schema retornado representa
+    O messages: permite alocar o contexto, nesse caso alocamos o contexto de avaliação de judge do nosso LLM,
+    além dos dados de usuario, como o texto apresentado e o output obtido, com a resposta em texto e chamadas de tools
+  */
+  const result = await generateObject({
+    model: openai("gpt-5.1"),
+    schema: judgeSchema,
+    schemaName: "evaluation",
+    providerOptions: {
+      openai: {
+        reasoningEffort: "high", //indica que o esforço deve ser alto
+      },
+    },
+    schemaDescription: "Evaluation of an Ai agent response",
+    messages: [
+      {role: 'system', content: `You are an evaluation judge. Score the agent's response on a scale of 1-10.
+        
+        Scoring criteria:
+        - 10: response fully addresses the task using tool results correctly
+        - 7-9: response is mostly correct with minor issues
+        - 4-6: response partially addresses the task
+        - 1-3: response is mostly incorrect or irrelevant`},
+        {
+          role: 'user',
+          content: `Task: ${target.originalTask}
+          
+          Tools Called: ${JSON.stringify(output.toolCallOrder)}
+          Tool Results provided: ${JSON.stringify(target.mockToolResults)}
+          
+          Agent's final answer:
+          ${output.text}
+          
+          Evaluate if this response corectly uses the tool results to answer the task`
+        }
+    ]
+  });
+
+  return result.object.score / 10;
+}
+
 export function toolsSelected(
   output: SingleTurnResult | MultiTurnResult,
   target: EvalTarget | MultiTurnTarget,

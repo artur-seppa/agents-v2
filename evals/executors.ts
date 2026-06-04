@@ -1,4 +1,4 @@
-import { generateText, stepCountIs, tool, type ToolSet } from "ai";
+import { generateText, stepCountIs, tool, type ModelMessage, type ToolSet } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 
@@ -9,6 +9,7 @@ import type {
   MultiTurnResult,
 } from "./types.ts";
 import { buildMessages, buildMockedTools } from "./utils.ts";
+import { SYSTEM_PROMPT } from "../dist/agent/system/prompt";
 
 /**
  * Tool definitions for mocked single-turn evaluations.
@@ -101,3 +102,57 @@ export async function singleTurnWithMocks(
  * Multi-turn executor with mocked tools.
  * Runs a complete agent loop with tools returning fixed values.
  */
+export const multiTurnWithMocks = async (data: MultiTurnEvalData) => {
+  const tools = buildMockedTools(data.mockTools);
+
+  //Obtido a partir do evaluator, com o contexto de avaliador do LLM e as mensagens de usuario
+  const messages: ModelMessage[] = data.messages ?? [
+    {role: "system", content: SYSTEM_PROMPT},
+    {role: "user", content: data.prompt!}
+  ];
+
+  /*
+    Diferente do single turn aqui o generate text tem multiplos steps, que definimos um max a ser seguido
+  */
+  const result = await generateText({
+    model: openai(data.config?.model ?? "gpt-5-mini"),
+    messages, // mensagem alocada no evaluator
+    tools, // mock de chamadas de tools disponiveis
+    stopWhen: stepCountIs(data.config?.maxSteps ?? 20),
+  });
+
+  /*
+    Nos steps verificamos cada operação feita pelo agent, com chamadas a tools e texto gerado pelo LLM
+  */
+  const allToolCalls: string[] = [];
+  const steps = result.steps.map((step) => {
+    const stepToolCalls = (step.toolCalls ?? []).map((tc) => {
+      allToolCalls.push(tc.toolName);
+      return {
+        toolName: tc.toolName,
+        args: "args" in tc ? tc.args : {},
+      };
+    });
+
+    const stepToolResults = (step.staticToolResults ?? []).map((tr) => ({
+      toolName: tr.toolName,
+      result: "results" in tr ? tr.results : tr,
+    }));
+
+    return {
+      toolCalls: stepToolCalls.length > 0 ? stepToolCalls : undefined,
+      toolResults: stepToolResults.length > 0 ? stepToolResults : undefined,
+      text: step.text || undefined
+    }
+  });
+
+  const toolsUsed = [new Set(allToolCalls)];
+
+  return {
+    text: result.text, //resultado final 
+    steps,
+    toolsUsed,
+    toolCallOrder: allToolCalls
+  }
+  
+}
